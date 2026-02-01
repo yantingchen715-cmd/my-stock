@@ -2,340 +2,196 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from scipy.stats import skew, kurtosis, linregress
 
 # ==========================================
-# 1. 頁面配置與專業 CSS 注入
+# 1. 機構級配置 (Dark Mode / High Density)
 # ==========================================
 st.set_page_config(
-    page_title="2026 資產配置與風險評估系統",
-    page_icon="⚖️",
+    page_title="Institutional Quant Terminal",
+    page_icon="🧬",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
-# 專業級 CSS：高對比、大字體、信任感配色
 st.markdown("""
     <style>
-    /* 全局設定 */
-    html, body, [class*="css"] {
-        font-family: 'Helvetica Neue', 'Microsoft JhengHei', sans-serif;
-        color: #333333;
-    }
+    /* 專業暗色系風格 - Bloomberg Terminal 風格 */
+    .stApp {background-color: #0e1117;}
+    h1, h2, h3, h4, p, div, span {color: #e6e6e6 !important; font-family: 'Roboto Mono', monospace;}
     
-    /* 標題層級 */
-    h1, h2, h3 {
-        color: #0F2C59 !important; 
-        font-weight: 700;
-        letter-spacing: 0.5px;
-    }
-    
-    /* 內文優化 */
-    p, div, label, .stMarkdown {
-        font-size: 18px !important;
-        line-height: 1.6 !important;
-    }
-    
-    /* 關鍵數據卡片 */
-    .metric-container {
-        background-color: #F8F9FA;
-        border-left: 6px solid #0F2C59;
-        padding: 25px;
-        margin-bottom: 25px;
-        border-radius: 8px;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
-    }
-    
-    .metric-value {
-        font-size: 36px;
-        font-weight: bold;
-        color: #0F2C59;
-        margin: 10px 0;
-    }
-    
-    /* 分析師建議區塊 (新增) */
-    .analyst-note {
-        background-color: #E8F4F8; /* 專業淡藍 */
-        border: 1px solid #D1E7ED;
+    /* 數據表格優化 */
+    .quant-card {
+        background-color: #1f2937;
+        border: 1px solid #374151;
         padding: 20px;
-        border-radius: 8px;
-        margin-top: 15px;
-        font-size: 18px;
+        border-radius: 4px;
+        margin-bottom: 15px;
     }
-    .analyst-title {
-        color: #0056b3;
-        font-weight: bold;
-        font-size: 20px;
-        margin-bottom: 10px;
-        display: flex;
-        align-items: center;
-    }
+    .metric-label {font-size: 12px; color: #9ca3af; text-transform: uppercase; letter-spacing: 1px;}
+    .metric-value {font-size: 28px; font-weight: bold; color: #60a5fa;}
+    .metric-sub {font-size: 14px; color: #d1d5db;}
     
-    /* 按鈕優化 */
-    .stButton>button {
-        background-color: #0F2C59;
-        color: white;
-        border: none;
-        border-radius: 6px;
-        height: 60px;
-        font-size: 22px;
-        font-weight: 600;
-        transition: background-color 0.3s;
-    }
-    .stButton>button:hover {
-        background-color: #163A72;
-    }
+    /* 回測曲線圖背景 */
+    .stLineChart {background-color: #1f2937; padding: 10px; border-radius: 4px;}
     </style>
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 金融運算核心 (含分析師邏輯)
+# 2. 量化運算引擎 (Quant Engine)
 # ==========================================
-class FinancialEngine:
+class QuantEngine:
     def __init__(self, ticker):
         self.ticker = f"{ticker}.TW" if not ticker.endswith('.TW') else ticker
         
-    def fetch_data(self, period="3y"):
+    def fetch_data(self, period="5y"): # 分析師至少看 3-5 年
         try:
             df = yf.download(self.ticker, period=period, progress=False)
             if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-            if len(df) < 200: return None
-            return df
+            return df if len(df) > 250 else None
         except: return None
 
-    def calculate_atr(self, df, window=14):
-        high_low = df['High'] - df['Low']
-        high_close = (df['High'] - df['Close'].shift()).abs()
-        low_close = (df['Low'] - df['Close'].shift()).abs()
-        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        return tr.rolling(window=window).mean().iloc[-1]
+    def calculate_hurst(self, ts):
+        """赫斯特指數：判斷是均值回歸 (<0.5) 還是趨勢延續 (>0.5)"""
+        lags = range(2, 20)
+        tau = [np.sqrt(np.std(np.subtract(ts[lag:], ts[:-lag]))) for lag in lags]
+        poly = np.polyfit(np.log(lags), np.log(tau), 1)
+        return poly[0] * 2.0
 
-    def get_market_overview(self, df):
-        """生成市場數據與分析師建議"""
-        close = df['Close']
-        price = close.iloc[-1]
-        prev_price = close.iloc[-2]
-        change = (price - prev_price) / prev_price * 100
+    def calculate_metrics(self, df):
+        returns = df['Close'].pct_change().dropna()
+        log_returns = np.log(1 + returns)
         
-        # 均線
-        ma20 = close.rolling(20).mean().iloc[-1]
-        ma60 = close.rolling(60).mean().iloc[-1]
+        # 統計因子
+        ann_return = returns.mean() * 252
+        ann_vol = returns.std() * np.sqrt(252)
+        sharpe = (ann_return - 0.02) / ann_vol # 假設無風險利率 2%
+        skew_val = skew(returns)
+        kurt_val = kurtosis(returns)
+        hurst = self.calculate_hurst(np.log(df['Close'].values))
         
-        # 乖離與 RSI
-        bias_20 = ((price - ma20) / ma20) * 100
-        delta = close.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs)).iloc[-1]
+        # 凱利公式 (Kelly Criterion)
+        # 簡化版：K = p - (1-p)/b (假設 b=1, 即賠率1:1時, K = 2p-1)
+        # 這裡使用歷史勝率推算建議倉位
+        win_days = returns[returns > 0].count()
+        total_days = returns.count()
+        win_rate = win_days / total_days
+        kelly_pct = (2 * win_rate - 1) * 100 
         
-        # ATR 風險
-        atr = self.calculate_atr(df)
-        atr_pct = (atr / price) * 100
-        
-        # === 分析師邏輯引擎 (The Brain) ===
-        rating = "持有 (Hold)"
-        rating_color = "#6c757d"
-        trend_desc = "區間震盪"
-        
-        # 預設建議
-        strategy = "中立觀望"
-        execution = "暫時不動作，觀察月線支撐。"
-        defense = f"停損設於月線 {ma20:.1f} 元"
-
-        if price < ma20:
-            # 空頭情境
-            rating = "減持 / 賣出 (Underweight)"
-            rating_color = "#dc3545" # 深紅
-            trend_desc = "空頭排列 (Bearish)"
-            
-            strategy = "防禦優先 (Capital Preservation)"
-            execution = "建議降低持股水位，反彈至月線不過時應站在賣方。"
-            defense = "嚴格執行停損，保留現金。"
-            
-        elif price > ma20 and ma20 > ma60:
-            # 多頭情境
-            if bias_20 < 8:
-                rating = "增持 / 買入 (Overweight)"
-                rating_color = "#198754" # 深綠
-                trend_desc = "多頭回測 (Bullish Pullback)"
-                
-                strategy = "積極佈局 (Accumulate)"
-                execution = f"股價回測月線有撐，建議於 {price:.1f} 元附近分批建立部位。"
-                defense = f"若收盤跌破月線 {ma20:.1f} 元則短線止損。"
-                
-            elif bias_20 > 15:
-                rating = "中立 / 止盈 (Neutral)"
-                rating_color = "#ffc107" # 黃色
-                trend_desc = "多頭過熱 (Overbought)"
-                
-                strategy = "部分獲利了結 (Profit Taking)"
-                execution = "乖離過大，不建議追價。持有者可調節 30% 部位落袋為安。"
-                defense = f"移動停利點上移至 10日線。"
-            else:
-                rating = "持有 (Hold)"
-                rating_color = "#0d6efd" # 藍色
-                trend_desc = "多頭行進 (Bullish Trend)"
-                
-                strategy = "續抱讓獲利奔跑 (Trend Following)"
-                execution = "趨勢穩健，無需頻繁進出，續抱即可。"
-                defense = f"波段停損守季線 {ma60:.1f} 元。"
-
         return {
-            "price": price,
-            "change_pct": change,
-            "ma20": ma20,
-            "rsi": rsi,
-            "bias": bias_20,
-            "atr_pct": atr_pct,
-            "rating": rating,
-            "color": rating_color,
-            "trend": trend_desc,
-            # 新增分析師建議包
-            "advice": {
-                "strategy": strategy,
-                "execution": execution,
-                "defense": defense
-            }
+            "Annual_Ret": ann_return * 100,
+            "Volatility": ann_vol * 100,
+            "Sharpe": sharpe,
+            "Skewness": skew_val,
+            "Hurst": hurst,
+            "Kelly": max(0, kelly_pct) # 負值代表不該下注
         }
 
-    def run_monte_carlo_var(self, df, simulations=10000, days=60):
-        # 區塊拔靴法 (Block Bootstrap)
-        returns = df['Close'].pct_change().dropna().values
-        last_price = df['Close'].iloc[-1]
-        sim_paths = np.zeros((simulations, days))
-        block_size = 5
-        num_blocks = days // block_size
+    def run_backtest(self, df):
+        """向量化回測引擎 (Vectorized Backtester)"""
+        data = df.copy()
+        data['Returns'] = data['Close'].pct_change()
         
-        for i in range(simulations):
-            path_returns = []
-            for _ in range(num_blocks):
-                start_idx = np.random.randint(0, len(returns) - block_size)
-                path_returns.extend(returns[start_idx : start_idx + block_size])
-            sim_paths[i] = last_price * np.cumprod(1 + np.array(path_returns))
-            
-        final_prices = sim_paths[:, -1]
-        p5 = np.percentile(final_prices, 5)
-        max_dd = (p5 - last_price) / last_price * 100
-        win_rate = (np.sum(final_prices > last_price) / simulations) * 100
+        # 策略邏輯：雙均線交叉 (Golden Cross)
+        data['SMA20'] = data['Close'].rolling(20).mean()
+        data['SMA60'] = data['Close'].rolling(60).mean()
         
-        return sim_paths, max_dd, win_rate, p5
+        # 訊號生成 (1=持倉, 0=空手)
+        data['Signal'] = np.where(data['SMA20'] > data['SMA60'], 1, 0)
+        
+        # 計算策略報酬 (Shift 1 代表訊號出現後隔天進場)
+        data['Strategy_Ret'] = data['Signal'].shift(1) * data['Returns']
+        
+        # 計算權益曲線 (Equity Curve)
+        data['BuyHold_Cum'] = (1 + data['Returns']).cumprod()
+        data['Strategy_Cum'] = (1 + data['Strategy_Ret']).cumprod()
+        
+        # 回測績效指標
+        total_ret = (data['Strategy_Cum'].iloc[-1] - 1) * 100
+        bh_ret = (data['BuyHold_Cum'].iloc[-1] - 1) * 100
+        
+        # 最大回撤 (Max Drawdown)
+        cum_roll_max = data['Strategy_Cum'].cummax()
+        drawdown = (data['Strategy_Cum'] - cum_roll_max) / cum_roll_max
+        max_dd = drawdown.min() * 100
+        
+        return data, total_ret, bh_ret, max_dd
 
 # ==========================================
-# 3. 介面層 (UI Layer)
+# 3. 介面層 (Analyst Dashboard)
 # ==========================================
-
-# 側邊欄
-with st.sidebar:
-    st.header("⚙️ 參數設定 (Settings)")
-    user_input = st.text_input("輸入監控代碼", value="2330, 2317, 0050")
-    st.markdown("---")
-    st.info("系統狀態：🟢 已連線至交易所")
-    run_btn = st.button("啟動分析模型")
-
-st.title("2026 資產配置與風險評估系統")
-st.markdown("##### Asset Allocation & Risk Assessment System")
+st.title("🧬 AlphaSeeker: Institutional Quant Terminal")
+st.markdown("_Engineered for High-Frequency Decision Making_")
 st.markdown("---")
 
-if run_btn:
-    tickers = [x.strip() for x in user_input.split(',')]
-    tab1, tab2 = st.tabs(["📈 市場概覽與分析師建議", "🛡️ 風險模擬與壓力測試"])
+col_input, col_btn = st.columns([3, 1])
+with col_input:
+    ticker = st.text_input("Tickers (Comma separated)", "2330, 2317, 2454, 3231", label_visibility="collapsed")
+with col_btn:
+    run = st.button("EXECUTE ANALYSIS", use_container_width=True)
+
+if run:
+    tickers = [x.strip() for x in ticker.split(',')]
     
-    with tab1:
-        st.subheader("Market Overview & Analyst Recommendations")
+    for t in tickers:
+        engine = QuantEngine(t)
+        df = engine.fetch_data()
         
-        for ticker in tickers:
-            engine = FinancialEngine(ticker)
-            df = engine.fetch_data()
+        if df is not None:
+            metrics = engine.calculate_metrics(df)
+            bt_data, strat_ret, bh_ret, max_dd = engine.run_backtest(df)
             
-            if df is not None:
-                data = engine.get_market_overview(df)
-                adv = data['advice']
-                
-                # HTML 卡片渲染
-                st.markdown(f"""
-                <div class="metric-container">
-                    <div style="display: flex; justify-content: space-between; align-items: flex-start;">
-                        <div>
-                            <span class="metric-label">{ticker} ｜ {data['trend']}</span>
-                            <div class="metric-value">
-                                {data['price']:.2f} 
-                                <span style="font-size:24px; color: {'#198754' if data['change_pct'] > 0 else '#dc3545'};">
-                                    ({data['change_pct']:+.2f}%)
-                                </span>
-                            </div>
-                        </div>
-                        <div style="text-align: right;">
-                            <span class="metric-label">綜合評級 (Rating)</span><br>
-                            <span style="font-size: 26px; font-weight: bold; color: {data['color']};">
-                                {data['rating']}
-                            </span>
-                        </div>
-                    </div>
-                    
-                    <hr style="opacity: 0.15; margin: 20px 0;">
-                    
-                    <div style="display: flex; justify-content: space-between; margin-bottom: 20px;">
-                        <div><span class="metric-label">乖離率 (Bias)</span><br><b>{data['bias']:+.2f}%</b></div>
-                        <div><span class="metric-label">RSI 強弱</span><br><b>{data['rsi']:.1f}</b></div>
-                        <div><span class="metric-label">ATR 波動</span><br><b>{data['atr_pct']:.2f}%</b></div>
-                    </div>
-
-                    <div class="analyst-note">
-                        <div class="analyst-title">👨‍💼 首席分析師操作建議 (Chief Analyst's Note)</div>
-                        <ul style="margin: 0; padding-left: 20px;">
-                            <li><strong>核心策略：</strong> {adv['strategy']}</li>
-                            <li style="margin-top:8px;"><strong>執行戰術：</strong> {adv['execution']}</li>
-                            <li style="margin-top:8px; color:#dc3545;"><strong>風控防線：</strong> {adv['defense']}</li>
-                        </ul>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-
-    with tab2:
-        st.subheader("Monte Carlo Simulation & Stress Testing")
-        
-        for ticker in tickers:
-            engine = FinancialEngine(ticker)
-            df = engine.fetch_data()
+            # --- Header: 標的與核心績效 ---
+            st.markdown(f"### 📌 {t} - Quantitative Profile")
             
-            if df is not None:
-                sim_paths, max_dd, win_rate, p5_price = engine.run_monte_carlo_var(df)
-                
-                # 繪圖
-                chart_data = pd.DataFrame(sim_paths[:100, :].T)
-                st.line_chart(chart_data, height=300)
-                
-                # 風險數據矩陣
-                c1, c2, c3 = st.columns(3)
-                
-                with c1:
-                    st.markdown(f"""
-                    <div style="background:#F8F9FA; padding:15px; border-radius:6px; border:1px solid #ddd;">
-                        <span class="metric-label">歷史勝率 (Win Rate)</span><br>
-                        <span style="font-size:28px; font-weight:bold; color:#0F2C59;">{win_rate:.1f}%</span>
-                    </div>""", unsafe_allow_html=True)
-                    
-                with c2:
-                    st.markdown(f"""
-                    <div style="background:#F8F9FA; padding:15px; border-radius:6px; border:1px solid #ddd;">
-                        <span class="metric-label">95% 風險價值 (VaR)</span><br>
-                        <span style="font-size:28px; font-weight:bold; color:#dc3545;">{max_dd:.1f}%</span>
-                    </div>""", unsafe_allow_html=True)
+            # 第一排：因子分析 (Factor Analysis)
+            c1, c2, c3, c4 = st.columns(4)
+            with c1:
+                st.markdown(f"""<div class="quant-card">
+                    <div class="metric-label">Sharpe Ratio (Risk-Adj)</div>
+                    <div class="metric-value" style="color: {'#10b981' if metrics['Sharpe']>1 else '#ef4444'};">{metrics['Sharpe']:.2f}</div>
+                    <div class="metric-sub">Target > 1.0</div>
+                </div>""", unsafe_allow_html=True)
+            with c2:
+                st.markdown(f"""<div class="quant-card">
+                    <div class="metric-label">Hurst Exponent</div>
+                    <div class="metric-value" style="color: {'#f59e0b' if 0.45 < metrics['Hurst'] < 0.55 else '#10b981'};">{metrics['Hurst']:.2f}</div>
+                    <div class="metric-sub">{'>0.5 Trend / <0.5 Mean Rev'}</div>
+                </div>""", unsafe_allow_html=True)
+            with c3:
+                st.markdown(f"""<div class="quant-card">
+                    <div class="metric-label">Kelly Criterion</div>
+                    <div class="metric-value">{metrics['Kelly']:.1f}%</div>
+                    <div class="metric-sub">Optimal Allocation</div>
+                </div>""", unsafe_allow_html=True)
+            with c4:
+                st.markdown(f"""<div class="quant-card">
+                    <div class="metric-label">Skewness (Tail Risk)</div>
+                    <div class="metric-value" style="color: {'#ef4444' if metrics['Skewness'] < -0.5 else '#10b981'};">{metrics['Skewness']:.2f}</div>
+                    <div class="metric-sub">Neg = Black Swan Risk</div>
+                </div>""", unsafe_allow_html=True)
 
-                with c3:
-                    st.markdown(f"""
-                    <div style="background:#F8F9FA; padding:15px; border-radius:6px; border:1px solid #ddd;">
-                        <span class="metric-label">極端支撐 (P5 Price)</span><br>
-                        <span style="font-size:28px; font-weight:bold; color:#333;">{p5_price:.1f}</span>
-                    </div>""", unsafe_allow_html=True)
+            # 第二排：回測驗證 (Backtest Verification)
+            c_chart, c_stats = st.columns([3, 1])
+            
+            with c_chart:
+                st.markdown("**Equity Curve (Strategy vs Buy & Hold)**")
+                chart_df = bt_data[['BuyHold_Cum', 'Strategy_Cum']]
+                st.line_chart(chart_df, color=["#6b7280", "#3b82f6"]) # 灰=大盤, 藍=策略
                 
-                st.markdown(f"""
-                <div style="background-color:#FFF3CD; border:1px solid #FFEEBA; color:#856404; padding:15px; border-radius:4px; margin-top:15px;">
-                    <strong>風險揭露：</strong> 基於 10,000 次模擬，{ticker} 在未來 60 天內有 5% 的機率跌至 <strong>{p5_price:.1f} 元</strong> ({max_dd:.1f}%)。
-                    請確保您的資產配置能承受此波動風險。
-                </div>
-                <hr>
-                """, unsafe_allow_html=True)
-else:
-    st.info("系統待命模式。請在左側輸入代碼並啟動分析。")
+            with c_stats:
+                st.markdown("""<div class="quant-card" style="height: 300px;">
+                    <div class="metric-label">Strategy Total Return</div>
+                    <div class="metric-value" style="font-size: 22px;">{:.1f}%</div>
+                    <br>
+                    <div class="metric-label">Benchmark Return</div>
+                    <div class="metric-value" style="font-size: 22px; color: #9ca3af;">{:.1f}%</div>
+                    <br>
+                    <div class="metric-label">Max Drawdown</div>
+                    <div class="metric-value" style="font-size: 22px; color: #ef4444;">{:.1f}%</div>
+                    <br>
+                    <div class="metric-label">Alpha (Excess Ret)</div>
+                    <div class="metric-value" style="font-size: 22px; color: #10b981;">{:.1f}%</div>
+                </div>""".format(strat_ret, bh_ret, max_dd, strat_ret - bh_ret), unsafe_allow_html=True)
+
+            st.markdown("---")
